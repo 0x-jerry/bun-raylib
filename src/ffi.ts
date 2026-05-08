@@ -1,10 +1,10 @@
-import { dlopen, FFIType, ptr, read, CString } from "bun:ffi";
+import { dlopen, FFIType, ptr, read, CString, suffix } from "bun:ffi";
 import type { Pointer } from "bun:ffi";
 
 type Ptr = Pointer;
 
-const LIB_PATH = import.meta.dirname + "/../raylib-6.0_macos/lib/libraylib.dylib";
-const BRIDGE_PATH = import.meta.dirname + "/bridge.dylib";
+const LIB_PATH = import.meta.dirname + `/../raylib/lib/libraylib.${suffix}`;
+const BRIDGE_PATH = import.meta.dirname + `/../raylib/lib/bridge.${suffix}`;
 
 // ===== Direct raylib FFI bindings (functions with only primitive args/returns) =====
 export const lib = dlopen(LIB_PATH, {

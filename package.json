@@ -1,6 +1,9 @@
 {
   "name": "bun-raylib",
   "type": "module",
+  "scripts": {
+    "setup": "bun run scripts/prepare.ts && bun run scripts/build-bridge.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
