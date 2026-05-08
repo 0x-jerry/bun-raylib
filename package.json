@@ -1,0 +1,10 @@
+{
+  "name": "bun-raylib",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
