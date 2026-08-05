@@ -2,48 +2,67 @@
 
 Call [raylib](https://www.raylib.com/) directly from TypeScript using Bun's FFI.
 
-No native addons, no N-API — just `dlopen` + a thin C bridge for struct marshaling.
+No native addons, no N-API — just `dlopen` + a generated C bridge for struct marshaling.
 
 ## Quick start
 
 ```bash
 bun install
-bun run scripts/prepare.ts
+bun run scripts/prepare.ts   # download raylib for your platform (once)
+bun run scripts/gen.ts       # generate bindings from raylib.h
 bun run scripts/build-bridge.ts
 bun run examples/basic.ts
 ```
 
-## Build
+`bun run scripts/gen.ts` regenerates **and** rebuilds the bridge, so normally:
 
 ```bash
-# Download latest raylib release for your platform
-bun run scripts/prepare.ts
-
-# Compile the bridge shared library
-bun run scripts/build-bridge.ts
+bun run scripts/gen
 ```
 
-## Architecture
+## How it works
 
 ```
-┌─────────────────────────────────────┐
-│  raylib.ts         (user API)       │
-├─────────────────────────────────────┤
-│  ffi.ts            (Bun dlopen)     │
-│    ├── lib        → libraylib       │  ← functions with only primitive args
-│    └── bridge     → bridge          │  ← functions that take/return structs
-├─────────────────────────────────────┤
-│  bridge.c → bridge (cc)             │  ← C wrappers that pack/unpack structs
-├─────────────────────────────────────┤
-│  types.ts          (TS interfaces)  │
-└─────────────────────────────────────┘
+raylib.h  (raylib/include)
+    │  parsed by scripts/gen.ts (no rlparser dependency)
+    ▼
+src/types.ts      ─ struct interfaces, enums, color constants
+src/layouts.ts    ─ struct/args layout tables (offsets, sizes)
+src/ffi.ts        ─ dlopen declarations (libraylib + bridge)
+src/raylib.ts     ─ high-level API wrappers
+src/bridge.c      ─ C wrappers + static layout asserts
+    │  compiled by scripts/build-bridge.ts
+    ▼
+raylib/lib/bridge.dylib
 ```
 
-**Why two libraries?** Bun's FFI `dlopen` only handles primitive types (`i32`, `f32`, `cstring`, `ptr`, etc.). Raylib functions like `DrawCircle(Vector2, float, Color)` pass structs **by value**, but the ARM64 C ABI packs small structs into single registers — decomposing them into individual scalar args in the FFI declaration produces the wrong calling convention.
+**Everything under `src/` except `pack.ts` and `index.ts` is generated.** Upgrading raylib = re-run `bun run scripts/gen` against the new header.
 
-The `bridge.c` file provides C wrapper functions that accept individual primitives, pack them into structs, then call the real raylib functions. It also returns structs via static buffer pointers for functions like `GetMousePosition() → Vector2`.
+### Why a bridge at all?
+
+Bun's FFI `dlopen` only handles primitive types. Raylib passes structs (Color, Vector2, Camera3D…) **by value**, which the C ABI packs into registers/stack in ways decomposed scalar args can't reproduce (verified: it segfaults). So `bridge.c` provides one C wrapper per struct-taking function.
+
+### The packing convention (why it's robust)
+
+- Every struct travels as **raw memory** through a single pointer arg — never decomposed into scalar FFI args.
+- TS packs args into a buffer using `layouts.ts` (generated from the same header parse that produces `bridge.c`), so the two sides **cannot drift**.
+- Struct returns come back through caller-provided out-buffers — no static globals, thread-safe.
+- Pointers inside structs (`Font.recs`, `Image.data`, `Wave.data`) are written as full 8-byte values — no truncation possible.
+- `bridge.c` ends with `_Static_assert(sizeof/offsetof, ...)` for every raylib struct and every args struct. If the layout engine disagrees with the C compiler, **the build fails** — this is how the binding verifies itself against the real ABI.
+
+### Direct vs bridge functions
+
+- **Direct** (`lib`): primitive params/returns only — `InitWindow`, `IsKeyDown`, `GetTime`, `DrawGrid`, `UpdateCamera(Camera*)` (pointer → packed in the wrapper), …
+- **Bridge** (`bridge`): any struct by value — drawing, fonts, images, textures, audio, collisions, …
+- **Skipped** (can't bind via FFI): varargs (`TraceLog`, `TextFormat`) and callback params (`SetTraceLogCallback`, audio stream callbacks…).
 
 ## Examples
+
+### Basic (single window)
+
+```bash
+bun run examples/basic.ts
+```
 
 ### Bounce (multi-window)
 
@@ -87,23 +106,30 @@ while (!WindowShouldClose()) {
 CloseWindow();
 ```
 
+### Pointer params
+
+Functions with raw pointer params (`LoadFileData(fileName, dataSize)` where `dataSize` is `int *`) take a raw pointer number. Allocate a buffer and pass `ptr(...)` from `bun:ffi` (or use the buffer-convenience overloads: any `const T*` input accepts `Uint8Array`/`Float32Array`/`number[]`; any `const Struct*` input accepts `Struct[]`).
+
 ## Project structure
 
 ```
 src/
-├── index.ts      ← re-exports everything
-├── types.ts      ← TypeScript types, enums, and color constants
-├── bridge.c      ← C wrappers for struct pass/return (compile → bridge)
-├── ffi.ts        ← Bun dlopen bindings + struct read helpers
-└── raylib.ts     ← high-level TypeScript API
+├── index.ts      ← re-exports (hand-written)
+├── pack.ts       ← pack/unpack runtime (hand-written)
+├── types.ts      ← GENERATED: interfaces, enums, colors
+├── layouts.ts    ← GENERATED: layout tables
+├── ffi.ts        ← GENERATED: dlopen declarations
+├── raylib.ts     ← GENERATED: API wrappers
+└── bridge.c      ← GENERATED: C bridge + static asserts
 scripts/
-├── prepare.ts    ← download latest raylib release for current platform
-└── build-bridge.ts ← compile bridge.c against raylib
+├── prepare.ts    ← download raylib release for current platform
+├── gen.ts        ← parse raylib.h → generate src/*
+└── build-bridge.ts ← compile bridge.c (also validates layouts)
+test/
+└── smoke.ts      ← exercises font/texture/audio/camera paths
 examples/
-├── basic.ts       ← single-window demo (shapes, text, input, blending)
+├── basic.ts       ← single-window demo
 └── bounce/        ← multi-window ball bounce demo
-    ├── main.ts    ← physics server + process orchestration
-    └── window.ts  ← raylib window child process
 raylib/           ← downloaded raylib release (headers + libraries)
 ```
 
